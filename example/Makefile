@@ -4,4 +4,4 @@ default:
 	gcc -o example_c example_c.c
 	strip example_asm example_c
 clean:
-	rm -f example_asm example_c example_asm.o 
+	rm -f example_asm example_c example_asm.o example_*.packed

@@ -103,56 +103,12 @@ fn main() {
 
     println!("Encrypting data...");
     let key = encrypt_and_return_key(&mut buf[0..sz]);
-
 //    println!("Key is: {:?}", key);
 
 
     // write to src/bin/loader.rs
-let loader_format_str = r#"
-#![feature(asm)]
-static memFdName: &'static str = "\0";
-static fdPath:    &'static str = "/proc/self/fd/3\0";
-use std::os::unix::io::FromRawFd;
-fn main() {
-    let buf = include_bytes!("{FORMAT_ZIP}");
-    let enc_key = {FORMAT_KEY};
-    let mut out = Vec::<u8>::with_capacity(buf.len());
-    for n in 0..buf.len() {
-        out.push( buf.get(n).unwrap() ^ enc_key.get(n%64).unwrap() );
-    }
-    let mut zipcur = zip::ZipArchive::new(std::io::Cursor::new(&out[..]));
-    let mut zipcur = zipcur.unwrap();
-    let mut zipf = zipcur.by_name("bin").unwrap();
-    unsafe {
-        let mut asm_ret:u64;
-        asm!(
-            "lea   rdi, [{}]",
-            "mov   rsi, 1",   // MFD_CLOEXEC
-            "mov   rax, 319", // SYS_MEMFD_CREATE
-            "syscall",
-            "mov   rax, {}",
-            sym memFdName,
-            out(reg) asm_ret,
-        );
-        if asm_ret == 0 {
-            panic!("failed");
-        }
-        let mut memfd = std::fs::File::from_raw_fd( asm_ret as i32 );
-        std::io::copy(&mut zipf, &mut memfd);
-        asm!(
-            "mov   rdi, {}", // MFD_CLOEXEC
-            "mov   rsi, 0",
-            "mov   rdx, 0",
-            "mov   r10, 0",
-            "mov   r8, 0",
-            "mov   r9, 0",
-            "mov   rax, 59", // SYS_execve
-            "syscall",
-            sym fdPath,
-        );
-    }
-}
-"#;
+    let loader_format_str = std::fs::read("src/bin/loader_template_rs").unwrap();
+    let loader_format_str = String::from_utf8(loader_format_str).unwrap();
     let mut zpath = String::from(std::env::current_dir().unwrap().to_str().unwrap());
     zpath.push_str("/out-enc.zip");
 
@@ -168,17 +124,18 @@ fn main() {
 
     println!("Compiling...");
     std::process::Command::new("cargo")
-        .env("RUSTFLAGS", "-C relocation-model=dynamic-no-pic")
-        .args(["build","--bin","loader"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .env("RUSTFLAGS", "-C relocation-model=dynamic-no-pic -C link-args=-fPIE")
+        .args(["build","--bin","loader","--release"])
         .status();
+//        .stdout(std::process::Stdio::null())
+//        .stderr(std::process::Stdio::null())
 
-    // $ pushd /tmp
-    // $ cargo new loader
-    // overwrite src/main.rs
-    // RUSTFLAGS="" cargo build
-    // $ popd
-    // $ cp /tmp/loader/target/release/loader .
-    // $ strip loader
+    println!("Cleanup...");
+    std::fs::remove_file("src/bin/loader.rs");
+    std::fs::remove_file("out-enc.zip");
+
+    let mut newname = String::from(fname);
+    newname.push_str(&".packed".to_string());
+    std::fs::rename("target/release/loader", &newname);
+    println!("Output: {}",newname);
 }
